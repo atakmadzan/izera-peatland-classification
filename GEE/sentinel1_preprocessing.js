@@ -1,120 +1,175 @@
-// Dane Sentinel-1
-var sentinel1 = ee.ImageCollection('COPERNICUS/S1_GRD')
-  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
-  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
-  .filter(ee.Filter.eq('instrumentMode', 'IW'))
-  .filterBounds(geometry) // Zamień geometry na interesujący Cię obszar
-  .filter(ee.Filter.calendarRange(2018, 2024, 'year'));
+// Sentinel-1 monthly feature generation in Google Earth Engine
+// This script:
+// 1. loads Sentinel-1 GRD data for a user-defined AOI,
+// 2. calculates radar indices (RVI, NDPI, CPR),
+// 3. generates monthly mean composites,
+// 4. exports multiband monthly stacks.
+//
+// Before running the script, update the USER INPUT section below.
 
-// Funkcja do obliczania wskaźników RVI, NDPI i CPR
-function calculateIndices(image) {
-  var vv = image.select('VV');
-  var vh = image.select('VH');
+// ------------------------------------------------------------
+// 1. USER INPUT
+// ------------------------------------------------------------
 
-  // Konwersja wartości backscatter z dB na skalę liniową
-  var vv_linear = ee.Image(10).pow(vv.divide(10));
-  var vh_linear = ee.Image(10).pow(vh.divide(10));
+// Define your Area of Interest (AOI) here.
+// Example:
+// var geometry = ee.FeatureCollection("projects/your-project/assets/your_aoi");
 
-  // Obliczenie wskaźników
-  var rvi = vh_linear.multiply(4.0).divide(vv_linear.add(vh_linear)).rename('RVI');
-  var ndpi = vv_linear.subtract(vh_linear).divide(vv_linear.add(vh_linear)).rename('NDPI');
-  var cpr = vh_linear.divide(vv_linear).rename('CPR');
+// Year range
+var startYear = 2018;
+var endYear = 2024;
+
+// Export settings
+var exportFolder = "your_drive_folder";
+var exportScale = 10;
+
+// ------------------------------------------------------------
+// 2. LOAD SENTINEL-1 DATA
+// ------------------------------------------------------------
+
+var sentinel1 = ee.ImageCollection("COPERNICUS/S1_GRD")
+  .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VV"))
+  .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VH"))
+  .filter(ee.Filter.eq("instrumentMode", "IW"))
+  .filterBounds(geometry)
+  .filter(ee.Filter.calendarRange(startYear, endYear, "year"));
+
+// ------------------------------------------------------------
+// 3. CALCULATE RADAR INDICES
+// ------------------------------------------------------------
+
+function addRadarIndices(image) {
+  var vv = image.select("VV");
+  var vh = image.select("VH");
+
+  // Convert backscatter from dB to linear scale
+  var vvLinear = ee.Image(10).pow(vv.divide(10));
+  var vhLinear = ee.Image(10).pow(vh.divide(10));
+
+  var rvi = vhLinear.multiply(4.0)
+    .divide(vvLinear.add(vhLinear))
+    .rename("RVI");
+
+  var ndpi = vvLinear.subtract(vhLinear)
+    .divide(vvLinear.add(vhLinear))
+    .rename("NDPI");
+
+  var cpr = vhLinear.divide(vvLinear)
+    .rename("CPR");
 
   return image.addBands([rvi, ndpi, cpr]);
 }
 
-// Dodawanie wskaźników do obrazów Sentinel-1
-var sentinel1WithIndices = sentinel1.map(calculateIndices);
+var sentinel1WithIndices = sentinel1.map(addRadarIndices);
 
-// Funkcja do obliczania miesięcznych średnich wskaźników
+// ------------------------------------------------------------
+// 4. CREATE MONTHLY MEAN IMAGES
+// ------------------------------------------------------------
+
 function monthlyMeanImage(year, month) {
+  year = ee.Number(year);
+  month = ee.Number(month);
+
   var startDate = ee.Date.fromYMD(year, month, 1);
-  var endDate = startDate.advance(1, 'month');
+  var endDate = startDate.advance(1, "month");
 
   var monthlyCollection = sentinel1WithIndices
     .filterDate(startDate, endDate)
-    .select(['RVI', 'NDPI', 'CPR']);
+    .select(["RVI", "NDPI", "CPR"]);
 
-  var meanImage = monthlyCollection.mean()
-    .rename(['RVI_' + year + '_' + month, 'NDPI_' + year + '_' + month, 'CPR_' + year + '_' + month]);
+  var monthString = month.format("%02d");
+  var yearString = year.format("%d");
+
+  var meanImage = monthlyCollection.mean().rename([
+    ee.String("RVI_").cat(yearString).cat("_").cat(monthString),
+    ee.String("NDPI_").cat(yearString).cat("_").cat(monthString),
+    ee.String("CPR_").cat(yearString).cat("_").cat(monthString)
+  ]);
 
   return meanImage;
 }
 
-// Generowanie rastrów miesięcznych dla każdego wskaźnika
-var years = ee.List.sequence(2018, 2024);
-var months = ee.List.sequence(1, 12);
+// ------------------------------------------------------------
+// 5. BUILD MULTIBAND MONTHLY STACKS
+// ------------------------------------------------------------
 
-var allRviBands = ee.ImageCollection([]);
-var allNdpiBands = ee.ImageCollection([]);
-var allCprBands = ee.ImageCollection([]);
-
-years.map(function(y) {
-  months.map(function(m) {
-    var meanImage = monthlyMeanImage(ee.Number(y), ee.Number(m));
-    
-    // Dodanie do odpowiednich kolekcji
-    allRviBands = allRviBands.merge(ee.ImageCollection(meanImage.select(0)));
-    allNdpiBands = allNdpiBands.merge(ee.ImageCollection(meanImage.select(1)));
-    allCprBands = allCprBands.merge(ee.ImageCollection(meanImage.select(2)));
-    
-    return null; // Zwracamy wartość, żeby spełnić wymagania metody .map()
-  });
-  return null; // Zwracamy wartość, żeby spełnić wymagania metody .map()
-});
-
-
-// Generowanie rastrów miesięcznych dla każdego wskaźnika
 var rviImages = [];
 var ndpiImages = [];
 var cprImages = [];
 
-// Iteracja po latach i miesiącach
-for (var year = 2018; year <= 2024; year++) {
+for (var year = startYear; year <= endYear; year++) {
   for (var month = 1; month <= 12; month++) {
     var meanImage = monthlyMeanImage(year, month);
 
-    // Tworzenie nazw kanałów
-    var rviBandName = 'RVI_' + year + '_' + (month < 10 ? '0' + month : month);
-    var ndpiBandName = 'NDPI_' + year + '_' + (month < 10 ? '0' + month : month);
-    var cprBandName = 'CPR_' + year + '_' + (month < 10 ? '0' + month : month);
+    var monthLabel = (month < 10 ? "0" + month : String(month));
 
-    // Dodawanie warstw do odpowiednich list
-    rviImages.push(meanImage.select('RVI_' + year + '_' + month).rename(rviBandName));
-    ndpiImages.push(meanImage.select('NDPI_' + year + '_' + month).rename(ndpiBandName));
-    cprImages.push(meanImage.select('CPR_' + year + '_' + month).rename(cprBandName));
+    rviImages.push(
+      meanImage
+        .select([0])
+        .rename("RVI_" + year + "_" + monthLabel)
+    );
+
+    ndpiImages.push(
+      meanImage
+        .select([1])
+        .rename("NDPI_" + year + "_" + monthLabel)
+    );
+
+    cprImages.push(
+      meanImage
+        .select([2])
+        .rename("CPR_" + year + "_" + monthLabel)
+    );
   }
 }
 
-// Tworzenie obrazów wielokanałowych
 var rviImage = ee.ImageCollection(rviImages).toBands();
 var ndpiImage = ee.ImageCollection(ndpiImages).toBands();
 var cprImage = ee.ImageCollection(cprImages).toBands();
 
-// Eksport wynikowych obrazów wielokanałowych
+// Remove collection-generated prefixes
+function cleanBandNames(image) {
+  var oldNames = image.bandNames();
+  var newNames = oldNames.map(function(name) {
+    return ee.String(name).split("_").slice(1).join("_");
+  });
+  return image.rename(newNames);
+}
+
+rviImage = cleanBandNames(rviImage);
+ndpiImage = cleanBandNames(ndpiImage);
+cprImage = cleanBandNames(cprImage);
+
+// ------------------------------------------------------------
+// 6. EXPORT MONTHLY STACKS
+// ------------------------------------------------------------
+
+// Example export for all three radar indices.
+// The exported rasters contain monthly bands for the selected time range.
+
 Export.image.toDrive({
   image: rviImage.clip(geometry),
-  description: 'RVI_Monthly_Averages',
-  folder: 'izera',
-  scale: 10,
+  description: "RVI_monthly_stack",
+  folder: exportFolder,
+  scale: exportScale,
   region: geometry,
   maxPixels: 1e13
 });
 
 Export.image.toDrive({
   image: ndpiImage.clip(geometry),
-  description: 'NDPI_Monthly_Averages',
-  folder: 'izera',
-  scale: 10,
+  description: "NDPI_monthly_stack",
+  folder: exportFolder,
+  scale: exportScale,
   region: geometry,
   maxPixels: 1e13
 });
 
 Export.image.toDrive({
   image: cprImage.clip(geometry),
-  description: 'CPR_Monthly_Averages',
-  folder: 'izera',
-  scale: 10,
+  description: "CPR_monthly_stack",
+  folder: exportFolder,
+  scale: exportScale,
   region: geometry,
   maxPixels: 1e13
 });
