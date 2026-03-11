@@ -1,9 +1,9 @@
-// Sentinel-1 monthly feature generation in Google Earth Engine
+// Sentinel-1 quarterly feature generation in Google Earth Engine
 // This script:
 // 1. loads Sentinel-1 GRD data for a user-defined AOI,
 // 2. calculates radar indices (RVI, NDPI, CPR),
-// 3. generates monthly mean composites,
-// 4. exports multiband monthly stacks.
+// 3. generates quarterly mean composites,
+// 4. exports multiband quarterly stacks.
 //
 // Before running the script, update the USER INPUT section below.
 
@@ -15,9 +15,16 @@
 // Example:
 // var geometry = ee.FeatureCollection("projects/your-project/assets/your_aoi");
 
-// Year range
-var startYear = 2018;
-var endYear = 2024;
+// Years used in the final classification
+var selectedYears = [2024];
+
+// Quarter definitions used in the project
+var quarterDefinitions = [
+  {label: "Q1", months: [1, 2, 3]},
+  {label: "Q2", months: [4, 5, 6]},
+  {label: "Q3", months: [7, 8, 9]},
+  {label: "Q4", months: [10, 11, 12]}
+];
 
 // Export settings
 var exportFolder = "your_drive_folder";
@@ -27,12 +34,15 @@ var exportScale = 10;
 // 2. LOAD SENTINEL-1 DATA
 // ------------------------------------------------------------
 
+var minYear = Math.min.apply(null, selectedYears);
+var maxYear = Math.max.apply(null, selectedYears);
+
 var sentinel1 = ee.ImageCollection("COPERNICUS/S1_GRD")
   .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VV"))
   .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VH"))
   .filter(ee.Filter.eq("instrumentMode", "IW"))
   .filterBounds(geometry)
-  .filter(ee.Filter.calendarRange(startYear, endYear, "year"));
+  .filter(ee.Filter.calendarRange(minYear, maxYear, "year"));
 
 // ------------------------------------------------------------
 // 3. CALCULATE RADAR INDICES
@@ -63,69 +73,77 @@ function addRadarIndices(image) {
 var sentinel1WithIndices = sentinel1.map(addRadarIndices);
 
 // ------------------------------------------------------------
-// 4. CREATE MONTHLY MEAN IMAGES
+// 4. CREATE QUARTERLY MEAN IMAGES
 // ------------------------------------------------------------
 
-function monthlyMeanImage(year, month) {
-  year = ee.Number(year);
-  month = ee.Number(month);
+function quarterlyMeanImage(year, quarterLabel, monthsList) {
+  var quarterlyCollection = ee.ImageCollection(
+    monthsList.map(function(month) {
+      var startDate = ee.Date.fromYMD(year, month, 1);
+      var endDate = startDate.advance(1, "month");
 
-  var startDate = ee.Date.fromYMD(year, month, 1);
-  var endDate = startDate.advance(1, "month");
+      return sentinel1WithIndices
+        .filterDate(startDate, endDate)
+        .select(["RVI", "NDPI", "CPR"])
+        .mean();
+    })
+  );
 
-  var monthlyCollection = sentinel1WithIndices
-    .filterDate(startDate, endDate)
-    .select(["RVI", "NDPI", "CPR"]);
+  var outputBandNames = [
+    "RVI_" + year + "_" + quarterLabel,
+    "NDPI_" + year + "_" + quarterLabel,
+    "CPR_" + year + "_" + quarterLabel
+  ];
 
-  var monthString = month.format("%02d");
-  var yearString = year.format("%d");
+  // Return an empty image if no valid observations are available
+  var emptyImage = ee.Image.constant([0, 0, 0])
+    .rename(outputBandNames)
+    .clip(geometry)
+    .toFloat();
 
-  var meanImage = monthlyCollection.mean().rename([
-    ee.String("RVI_").cat(yearString).cat("_").cat(monthString),
-    ee.String("NDPI_").cat(yearString).cat("_").cat(monthString),
-    ee.String("CPR_").cat(yearString).cat("_").cat(monthString)
-  ]);
+  var meanImage = ee.Algorithms.If(
+    quarterlyCollection.size().eq(0),
+    emptyImage,
+    quarterlyCollection.mean().rename(outputBandNames).toFloat()
+  );
 
-  return meanImage;
+  return ee.Image(meanImage);
 }
 
 // ------------------------------------------------------------
-// 5. BUILD MULTIBAND MONTHLY STACKS
+// 5. BUILD MULTIBAND QUARTERLY STACKS
 // ------------------------------------------------------------
 
 var rviImages = [];
 var ndpiImages = [];
 var cprImages = [];
 
-for (var year = startYear; year <= endYear; year++) {
-  for (var month = 1; month <= 12; month++) {
-    var meanImage = monthlyMeanImage(year, month);
+for (var y = 0; y < selectedYears.length; y++) {
+  var year = selectedYears[y];
 
-    var monthLabel = (month < 10 ? "0" + month : String(month));
+  for (var q = 0; q < quarterDefinitions.length; q++) {
+    var quarterLabel = quarterDefinitions[q].label;
+    var monthsList = quarterDefinitions[q].months;
+
+    var meanImage = quarterlyMeanImage(year, quarterLabel, monthsList);
 
     rviImages.push(
-      meanImage
-        .select([0])
-        .rename("RVI_" + year + "_" + monthLabel)
+      meanImage.select([0]).rename("RVI_" + year + "_" + quarterLabel)
     );
 
     ndpiImages.push(
-      meanImage
-        .select([1])
-        .rename("NDPI_" + year + "_" + monthLabel)
+      meanImage.select([1]).rename("NDPI_" + year + "_" + quarterLabel)
     );
 
     cprImages.push(
-      meanImage
-        .select([2])
-        .rename("CPR_" + year + "_" + monthLabel)
+      meanImage.select([2]).rename("CPR_" + year + "_" + quarterLabel)
     );
   }
 }
 
-var rviImage = ee.ImageCollection(rviImages).toBands();
-var ndpiImage = ee.ImageCollection(ndpiImages).toBands();
-var cprImage = ee.ImageCollection(cprImages).toBands();
+var rviImage = ee.ImageCollection(rviImages).toBands().toFloat();
+var ndpiImage = ee.ImageCollection(ndpiImages).toBands().toFloat();
+var cprImage = ee.ImageCollection(cprImages).toBands().toFloat();
 
 // Remove collection-generated prefixes
 function cleanBandNames(image) {
@@ -141,15 +159,12 @@ ndpiImage = cleanBandNames(ndpiImage);
 cprImage = cleanBandNames(cprImage);
 
 // ------------------------------------------------------------
-// 6. EXPORT MONTHLY STACKS
+// 6. EXPORT QUARTERLY STACKS
 // ------------------------------------------------------------
-
-// Example export for all three radar indices.
-// The exported rasters contain monthly bands for the selected time range.
 
 Export.image.toDrive({
   image: rviImage.clip(geometry),
-  description: "RVI_monthly_stack",
+  description: "RVI_quarterly_stack",
   folder: exportFolder,
   scale: exportScale,
   region: geometry,
@@ -158,7 +173,7 @@ Export.image.toDrive({
 
 Export.image.toDrive({
   image: ndpiImage.clip(geometry),
-  description: "NDPI_monthly_stack",
+  description: "NDPI_quarterly_stack",
   folder: exportFolder,
   scale: exportScale,
   region: geometry,
@@ -167,7 +182,7 @@ Export.image.toDrive({
 
 Export.image.toDrive({
   image: cprImage.clip(geometry),
-  description: "CPR_monthly_stack",
+  description: "CPR_quarterly_stack",
   folder: exportFolder,
   scale: exportScale,
   region: geometry,
