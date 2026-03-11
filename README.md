@@ -89,17 +89,30 @@ The best performing model is used to generate the final peatland classification 
 
 ---
 
-# Example Results
+## Example Results
 
-Results include:
+The table below presents classification accuracy obtained for different input data combinations using **Random Forest (RF)** and **XGBoost (XGB)** classifiers.
 
-- comparison of classification accuracy for different feature sets and algorithms
-- final peatland classification map for the Izera Mountains
+| Data | RF Overall Accuracy | RF Kappa | XGB Overall Accuracy | XGB Kappa |
+|-----|-----|-----|-----|-----|
+| S2 | 83.74% | 78.52% | 84.50% | 79.51% |
+| S2 + NDMI | 84.15% | 79.03% | 84.76% | 79.86% |
+| S2 + texture | 82.04% | 76.16% | 84.02% | 78.83% |
+| S1 | 53.30% | 38.25% | 51.68% | 36.03% |
+| S1 + texture | 54.76% | 39.93% | 54.99% | 40.60% |
+| S2 + S1 + NDMI | 84.39% | 79.34% | **85.32%** | **80.61%** |
+| S2 + NDMI + S1 + texture | **84.45%** | **79.41%** | 83.85% | 78.63% |
+| Texture only | 65.61% | 54.47% | 66.80% | 56.35% |
+| All features | 82.92% | 77.35% | 82.77% | 77.16% |
 
-The results will be presented in the **figures** directory as:
+The highest classification performance was achieved using **XGBoost with Sentinel-2, Sentinel-1 and NDMI features**, reaching **85.32% Overall Accuracy** and **80.61% Kappa**.
 
-- a table comparing model performance
-- a map showing the best classification result.
+---
+## Example Classification Map
+
+Below is the final peatland classification map for the Izera Mountains generated using the **XGBoost model with Sentinel-1, Sentinel-2 and NDMI features**.
+
+![Peatland classification](figures/izera/classification_map.png)
 
 ---
 
